@@ -7,6 +7,10 @@
 // per account so openclaw can spin our runtime up at gateway startup.
 // Outbound (`outbound`) and inbound dispatch glue still pending.
 
+/** Stable channel id. Single source of truth so a future rename
+ *  doesn't have to sweep multiple call sites. */
+const CHANNEL_ID = "wechat-bridge";
+
 type ResolvedWechatAccount = {
   accountId: string;
   enabled: boolean;
@@ -90,6 +94,11 @@ type ChannelPluginShape = {
      * `base:` wrapper that createChatChannelPlugin uses internally
      * before normalizing. Plugins that don't go through the chat
      * helper (us) must supply the flat adapter directly.
+     *
+     * openclaw's ChannelOutboundContext does NOT include
+     * `abortSignal` — outbound calls are not user-cancellable from
+     * openclaw's side. We rely on undici's bodyTimeout in
+     * BridgeClient.requestJson to bound stuck POSTs.
      */
     sendText: (ctx: {
       cfg: unknown;
@@ -97,7 +106,6 @@ type ChannelPluginShape = {
       text: string;
       accountId?: string | null;
       deps?: { [channelId: string]: unknown };
-      abortSignal?: AbortSignal;
     }) => Promise<{
       channel: string;
       messageId: string;
@@ -135,7 +143,7 @@ const readChannelSection = (cfg: unknown): Record<string, unknown> | null => {
   if (!cfg || typeof cfg !== "object") return null;
   const channels = (cfg as { channels?: unknown }).channels;
   if (!channels || typeof channels !== "object") return null;
-  const section = (channels as Record<string, unknown>)["wechat-bridge"];
+  const section = (channels as Record<string, unknown>)[CHANNEL_ID];
   if (!section || typeof section !== "object") return null;
   return section as Record<string, unknown>;
 };
@@ -206,7 +214,7 @@ const resolveAccount = (
 };
 
 const wechatBridgeMeta: ChannelPluginShape["meta"] = {
-  id: "wechat-bridge",
+  id: CHANNEL_ID,
   label: "WeChat (Bridge)",
   selectionLabel: "WeChat — local bridge (wechat-skill)",
   detailLabel: "WeChat Bridge",
@@ -316,34 +324,71 @@ function snapshotPatchFromRuntimeStatus(
  * discarded), so we mirror the abort into runtime.stop() and return
  * void.
  */
+// Memoized lazy imports. signal does the same at
+// extensions/signal/src/channel.ts:39-55 — keeps cold-start cheap for
+// plugins that are installed but never invoked, while avoiding
+// repeated module-resolver hits when send is called in a loop.
+let outboundDepsPromise:
+  | Promise<{
+      BridgeClient: typeof import("./src/daemon.js").BridgeClient;
+      loadConfig: typeof import("./src/config-schema.js").loadConfig;
+      sendMessage: typeof import("./src/outbound.js").sendMessage;
+    }>
+  | null = null;
+
+const loadOutboundDeps = (): Promise<{
+  BridgeClient: typeof import("./src/daemon.js").BridgeClient;
+  loadConfig: typeof import("./src/config-schema.js").loadConfig;
+  sendMessage: typeof import("./src/outbound.js").sendMessage;
+}> => {
+  if (!outboundDepsPromise) {
+    outboundDepsPromise = (async () => {
+      const [daemon, config, outbound] = await Promise.all([
+        import("./src/daemon.js"),
+        import("./src/config-schema.js"),
+        import("./src/outbound.js"),
+      ]);
+      return {
+        BridgeClient: daemon.BridgeClient,
+        loadConfig: config.loadConfig,
+        sendMessage: outbound.sendMessage,
+      };
+    })();
+  }
+  return outboundDepsPromise;
+};
+
 /**
  * Outbound text send — adapts our M4 sendMessage into openclaw's
- * `outbound.sendText` contract so a CLI / agent / tool-call
- * invocation flows through to wechat-bridge.
+ * `outbound.sendText` contract.
  *
- * The bridge's messageId is forwarded so openclaw can de-dupe / link
- * agent acknowledgments. M4's chunking already runs inside
- * sendMessage, so we feed `text` whole. openclaw's outer chunker
- * (`outbound.chunker`) is set to a no-op pass-through within the
- * 4096-char limit so its splitter doesn't redundantly fragment our
- * chunks before they reach our path.
+ * Chunking lives at the OUTER level (openclaw's chunker, configured
+ * to MAX_MESSAGE_LENGTH) so each call here corresponds to exactly
+ * ONE bridge POST. Without this, M4's internal chunking would split a
+ * 9000-char message into multiple POSTs but openclaw would only see
+ * one OutboundDeliveryResult — and on retry, ALL the chunks would
+ * re-send and the recipient would see duplicates of the chunks that
+ * already landed. M4 still chunks internally for safety, but for
+ * in-spec input (≤4096 chars) it's a no-op and one call = one POST.
+ *
+ * Auth-fatal phrasing: openclaw classifies thrown errors via regex
+ * patterns at delivery-queue-recovery.ts:53-65. None of the existing
+ * patterns describe "auth/subscription expired", so to mark this as
+ * permanent (don't retry 5 times over 12 minutes) we reuse the
+ * `forbidden: bot was kicked` phrase — semantically WeChat IS
+ * "kicking" us out until the user re-activates. TODO: upstream a
+ * dedicated `/auth.*expired/i` pattern so this hack can go away.
  */
 async function sendTextOutbound(params: {
   cfg: unknown;
   to: string;
   text: string;
   accountId?: string | null;
-  abortSignal?: AbortSignal;
 }): Promise<{
   channel: string;
   messageId: string;
-  meta?: Record<string, unknown>;
 }> {
-  const [{ BridgeClient }, { loadConfig }, { sendMessage }] = await Promise.all([
-    import("./src/daemon.js"),
-    import("./src/config-schema.js"),
-    import("./src/outbound.js"),
-  ]);
+  const { BridgeClient, loadConfig, sendMessage } = await loadOutboundDeps();
 
   const account = resolveAccount(params.cfg, params.accountId ?? null);
   const runtimeConfig = loadConfig({
@@ -355,28 +400,39 @@ async function sendTextOutbound(params: {
   });
   const client = new BridgeClient(runtimeConfig);
 
-  params.abortSignal?.throwIfAborted();
   const outcome = await sendMessage(client, {
     chatId: params.to,
     content: params.text,
   });
 
   if (outcome.kind === "ok") {
-    return { channel: "wechat-bridge", messageId: outcome.messageId ?? "" };
+    return { channel: CHANNEL_ID, messageId: outcome.messageId ?? "" };
   }
   if (outcome.kind === "auth-fatal") {
-    throw new Error(`wechat-bridge auth-fatal (HTTP ${outcome.status}): ${outcome.reason}`);
+    // Keyword `forbidden: bot was kicked` matches openclaw's permanent-
+    // error pattern at delivery-queue-recovery.ts:53-65 so the queue
+    // skips retry. The wechat-bridge prefix preserves the actual cause
+    // for user-facing surfaces.
+    throw new Error(
+      `forbidden: bot was kicked — wechat-bridge auth-fatal (HTTP ${outcome.status}): ${outcome.reason}`,
+    );
   }
   if (outcome.kind === "unsupported") {
-    throw new Error(outcome.reason);
+    // 501 from the bridge — operation isn't implemented in the daemon
+    // version the operator runs. Permanent for THIS bridge build.
+    throw new Error(`outbound not configured for channel: ${outcome.reason}`);
   }
   if (outcome.kind === "reply-degraded") {
-    return {
-      channel: "wechat-bridge",
-      messageId: outcome.messageId ?? "",
-      meta: { degraded: "reply-not-supported" },
-    };
+    // sendTextOutbound never passes replyTo (openclaw's
+    // ChannelOutboundContext doesn't surface one yet for sendText),
+    // so this branch is dead in practice. Kept for parity with the
+    // M4 SendOutcome union; if openclaw later plumbs replyTo through
+    // we want to propagate the messageId rather than treat it as a
+    // failure.
+    return { channel: CHANNEL_ID, messageId: outcome.messageId ?? "" };
   }
+  // kind === "error". Generic transient — openclaw retries per its
+  // queue-recovery policy (5 retries with exponential backoff).
   throw new Error(`wechat-bridge send failed (HTTP ${outcome.status}): ${outcome.reason}`);
 }
 
@@ -462,7 +518,7 @@ async function startAccount(ctx: GatewayAccountContext): Promise<void> {
 }
 
 export const wechatBridgePlugin: ChannelPluginShape = {
-  id: "wechat-bridge",
+  id: CHANNEL_ID,
   meta: wechatBridgeMeta,
   capabilities: {
     chatTypes: ["dm", "group"],
@@ -488,9 +544,21 @@ export const wechatBridgePlugin: ChannelPluginShape = {
   },
   outbound: {
     deliveryMode: "direct",
-    // M4 sendMessage handles chunking internally; openclaw's outer
-    // chunker just needs to be a no-op pass-through within our limit.
-    chunker: (text: string, _limit: number) => (text ? [text] : []),
+    // Real chunker: hard-cut at `limit` so each openclaw send call
+    // corresponds to ONE bridge POST. Earlier no-op pass-through let
+    // M4's internal chunking split into multiple POSTs but openclaw
+    // only saw one OutboundDeliveryResult; on retry, ALL chunks
+    // re-sent and recipients saw duplicates of the chunks that
+    // already landed.
+    chunker: (text: string, limit: number) => {
+      if (!text) return [];
+      if (text.length <= limit) return [text];
+      const out: string[] = [];
+      for (let i = 0; i < text.length; i += limit) {
+        out.push(text.slice(i, i + limit));
+      }
+      return out;
+    },
     chunkerMode: "text",
     textChunkLimit: 4096,
     sendText: sendTextOutbound,
