@@ -29,5 +29,43 @@
         "description": "When true, group messages are only forwarded to the agent when self_wxid appears in the message's mentionedIds list."
       }
     }
+  },
+  "channelConfigs": {
+    "wechat-bridge": {
+      "schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "enabled": { "type": "boolean" },
+          "bridge_host": {
+            "type": "string",
+            "default": "127.0.0.1",
+            "description": "wechat-bridge HTTP host"
+          },
+          "bridge_port": {
+            "type": "integer",
+            "default": 18400,
+            "minimum": 1,
+            "maximum": 65535,
+            "description": "wechat-bridge HTTP port"
+          },
+          "bridge_bearer": {
+            "type": "string",
+            "description": "Optional Bearer token; required if wechat-bridge was started with WECHAT_BRIDGE_BEARER set"
+          },
+          "self_wxid": {
+            "type": "string",
+            "description": "Operator's own wxid. Required for @-mention gating in groups."
+          },
+          "require_mention_in_groups": {
+            "type": "boolean",
+            "default": true,
+            "description": "When true, group messages are only forwarded when self_wxid appears in the message's mentionedIds list."
+          }
+        },
+        "additionalProperties": false
+      }
+    }
   }
 }
