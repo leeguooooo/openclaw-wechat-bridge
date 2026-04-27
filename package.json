@@ -1,0 +1,83 @@
+{
+  "name": "@leeguoo/openclaw-wechat-bridge",
+  "version": "0.0.1",
+  "description": "OpenClaw channel plugin that bridges to local macOS WeChat via wechat-bridge (LLDB-based, from leeguooooo/wechat-skill)",
+  "license": "MIT",
+  "author": "leeguooooo <guoli@zhihu.com>",
+  "homepage": "https://github.com/leeguooooo/openclaw-wechat-bridge",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/leeguooooo/openclaw-wechat-bridge.git"
+  },
+  "bugs": {
+    "url": "https://github.com/leeguooooo/openclaw-wechat-bridge/issues"
+  },
+  "keywords": [
+    "openclaw",
+    "openclaw-plugin",
+    "wechat",
+    "weixin",
+    "wechat-bridge",
+    "wechat-skill",
+    "macos"
+  ],
+  "type": "module",
+  "files": [
+    "dist",
+    "openclaw.plugin.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "setupEntry": "./setup-entry.ts",
+    "channel": {
+      "id": "wechat-bridge",
+      "label": "WeChat (Bridge)",
+      "selectionLabel": "WeChat — local bridge (wechat-skill)",
+      "detailLabel": "WeChat Bridge",
+      "docsPath": "/channels/wechat-bridge",
+      "docsLabel": "wechat-bridge",
+      "blurb": "Connects to a local wechat-bridge daemon (macOS, requires wechat-skill). Complements Tencent's @tencent-weixin/openclaw-weixin; this one runs against your already-logged-in macOS WeChat client.",
+      "systemImage": "bubble.left.and.bubble.right",
+      "markdownCapable": false,
+      "cliAddOptions": [
+        {
+          "flags": "--bridge-host <host>",
+          "description": "wechat-bridge HTTP host (default 127.0.0.1)"
+        },
+        {
+          "flags": "--bridge-port <port>",
+          "description": "wechat-bridge HTTP port (default 18400)"
+        },
+        {
+          "flags": "--self-wxid <wxid>",
+          "description": "operator wxid; required for group @-mention gating"
+        }
+      ]
+    }
+  },
+  "peerDependencies": {
+    "openclaw": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0"
+  },
+  "dependencies": {
+    "undici": "^6.0.0",
+    "zod": "^3.23.0"
+  }
+}
