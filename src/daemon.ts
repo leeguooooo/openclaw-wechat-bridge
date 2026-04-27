@@ -21,6 +21,7 @@ import { request } from "undici";
 import {
   HTTP_CONNECT_TIMEOUT_MS,
   HTTP_READ_TIMEOUT_MS,
+  SEND_RETRYABLE_STATUSES,
   SSE_READ_TIMEOUT_MS,
   type WeChatBridgeConfig,
 } from "./config-schema.js";
@@ -75,6 +76,21 @@ export type SendResponse = {
   error?: string;
   message?: string;
 };
+
+/**
+ * Health outcome mapped from a raw `/health` probe. The runtime layer
+ * maps each variant onto openclaw's platform-state model; collapsing
+ * the mapping into one place here matches the Python adapter's
+ * `_check_health_once` (wechat.py:308-336) so the runtime can stay
+ * dumb about HTTP status codes.
+ */
+export type HealthOutcome =
+  | { kind: "healthy"; status: BridgeHealth }
+  | { kind: "auth-fatal"; status: number }
+  | { kind: "degraded"; reason: string; status: number };
+
+const SEND_MAX_ATTEMPTS = 3;
+const SEND_BACKOFF_BASE_MS = 1_000;
 
 /**
  * Build standard request headers — Bearer iff configured, plus the
@@ -150,9 +166,50 @@ export class BridgeClient {
     }
   }
 
-  /** GET /health — probe used by the gateway's health monitor. */
-  async checkHealth(): Promise<RequestJsonResult<BridgeHealth>> {
-    return this.requestJson<BridgeHealth>("GET", "/health", { timeoutMs: 10_000 });
+  /**
+   * GET /health — probe used by the gateway's health monitor.
+   *
+   * Returns a tagged outcome so the runtime layer can stay decoupled
+   * from HTTP status codes:
+   *   - 200 with `{status: "connected"}`  → healthy
+   *   - 200 with any other status string  → degraded
+   *   - 401 or 402                         → auth-fatal (don't retry)
+   *   - 503 / other non-200 / network err → degraded (retryable)
+   *
+   * Mirrors the branch structure of wechat.py:308-336 so behavior is
+   * identical to hermes-agent run-for-run.
+   */
+  async checkHealth(): Promise<HealthOutcome> {
+    const { status, data } = await this.requestJson<BridgeHealth>("GET", "/health", {
+      timeoutMs: 10_000,
+    });
+    if (status === 401 || status === 402) {
+      return { kind: "auth-fatal", status };
+    }
+    if (status !== 200) {
+      // 0 = transport error; 503 = bridge says retry; anything else
+      // (404, 500, 502 from a misconfigured proxy) collapses to the
+      // same retryable-degraded path.
+      return {
+        kind: "degraded",
+        status,
+        reason:
+          status === 0
+            ? "WeChat bridge unreachable"
+            : status === 503
+              ? "WeChat bridge temporarily unavailable (503)"
+              : `WeChat bridge health check failed (${status})`,
+      };
+    }
+    const bridgeStatus = String((data?.status ?? "unknown")).trim().toLowerCase();
+    if (bridgeStatus === "connected") {
+      return { kind: "healthy", status: data ?? { status: "connected" } };
+    }
+    return {
+      kind: "degraded",
+      status,
+      reason: `WeChat bridge status is ${bridgeStatus || "unknown"}`,
+    };
   }
 
   /**
@@ -185,11 +242,30 @@ export class BridgeClient {
    * field that maps to atuserlist on the WeChat side; we forward it
    * iff the caller supplied one.
    *
-   * Returns the parsed response shape directly so caller can fan out
-   * `success/messageId/error` to openclaw's SendResult.
+   * Retries up to SEND_MAX_ATTEMPTS times on `SEND_RETRYABLE_STATUSES`
+   * (currently just 503). Backoff is linear+jitter, capped at
+   * SEND_BACKOFF_BASE_MS * attempt. Mirrors the Python adapter's retry
+   * shape (wechat.py:200-254 + wechat.py:568-579) so a transient bridge
+   * blip doesn't surface as a user-visible send failure when both
+   * implementations would retry past it.
+   *
+   * 401/402 are NOT retried — auth-expired is fatal up the call chain
+   * and retrying just delays the user-visible error.
    */
   async send(body: SendBody): Promise<RequestJsonResult<SendResponse>> {
-    return this.requestJson<SendResponse>("POST", "/send", { body });
+    let last: RequestJsonResult<SendResponse> = { status: 0, data: null };
+    for (let attempt = 1; attempt <= SEND_MAX_ATTEMPTS; attempt += 1) {
+      last = await this.requestJson<SendResponse>("POST", "/send", { body });
+      if (!SEND_RETRYABLE_STATUSES.has(last.status) || attempt === SEND_MAX_ATTEMPTS) {
+        return last;
+      }
+      // Linear backoff with mild jitter — keep total worst-case at ~3s
+      // so the caller's outer timeout budget (~10-30s) isn't blown on
+      // retry alone.
+      const jitter = Math.floor(Math.random() * 250);
+      await sleep(SEND_BACKOFF_BASE_MS * attempt + jitter);
+    }
+    return last;
   }
 
   /**
@@ -233,33 +309,49 @@ export class BridgeClient {
     const decoder = new TextDecoder();
     let buffer = "";
 
+    const tryProcessLine = function* (
+      this: void,
+      raw: string,
+    ): Generator<BridgeMessage, void, void> {
+      const line = raw.replace(/\r$/, "");
+      if (!line || line.startsWith(":")) return;
+      if (!line.startsWith("data:")) return;
+      const payload = line.slice("data:".length).trim();
+      if (!payload) return;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(payload);
+      } catch {
+        return;
+      }
+      if (Array.isArray(parsed)) {
+        for (const entry of parsed) {
+          if (entry && typeof entry === "object") {
+            yield entry as BridgeMessage;
+          }
+        }
+      } else if (parsed && typeof parsed === "object") {
+        yield parsed as BridgeMessage;
+      }
+    };
+
     for await (const chunk of response.body as AsyncIterable<Buffer>) {
       buffer += decoder.decode(chunk, { stream: true });
       let newlineIdx: number;
       while ((newlineIdx = buffer.indexOf("\n")) !== -1) {
         const rawLine = buffer.slice(0, newlineIdx);
         buffer = buffer.slice(newlineIdx + 1);
-        const line = rawLine.replace(/\r$/, "");
-        if (!line || line.startsWith(":")) continue;
-        if (!line.startsWith("data:")) continue;
-        const payload = line.slice("data:".length).trim();
-        if (!payload) continue;
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(payload);
-        } catch {
-          continue;
-        }
-        if (Array.isArray(parsed)) {
-          for (const entry of parsed) {
-            if (entry && typeof entry === "object") {
-              yield entry as BridgeMessage;
-            }
-          }
-        } else if (parsed && typeof parsed === "object") {
-          yield parsed as BridgeMessage;
-        }
+        yield* tryProcessLine(rawLine);
       }
+    }
+
+    // Flush: drain any remaining bytes in the decoder (multi-byte char
+    // boundaries) and yield the trailing partial line if the stream
+    // ended without a final \n. Without this, a bridge graceful close
+    // mid-frame can drop the last event we should have processed.
+    buffer += decoder.decode();
+    if (buffer.length > 0) {
+      yield* tryProcessLine(buffer);
     }
   }
 }
@@ -271,4 +363,8 @@ export class BridgeStreamError extends Error {
     this.name = "BridgeStreamError";
     this.status = status;
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
