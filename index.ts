@@ -7,9 +7,12 @@
 // in package.json), it imports `channel-plugin-api.ts` for the inbound /
 // outbound contract and `runtime-api.ts` for the gateway-side runtime hook.
 
-import { defineBundledChannelEntry } from "openclaw/plugin-sdk/channel-entry-contract";
+import {
+  defineBundledChannelEntry,
+  type BundledChannelEntryContract,
+} from "openclaw/plugin-sdk/channel-entry-contract";
 
-export default defineBundledChannelEntry({
+const entry: BundledChannelEntryContract = defineBundledChannelEntry({
   id: "wechat-bridge",
   name: "WeChat (Bridge)",
   description: "WeChat channel via local wechat-bridge daemon (macOS, wechat-skill)",
@@ -23,3 +26,5 @@ export default defineBundledChannelEntry({
     exportName: "setWechatBridgeRuntime",
   },
 });
+
+export default entry;

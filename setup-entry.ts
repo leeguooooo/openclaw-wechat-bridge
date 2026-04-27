@@ -4,12 +4,17 @@
 // AXIsProcessTrusted has been granted. For now the entry exists so openclaw's
 // plugin loader can register the setup hook.
 
-import { defineBundledChannelSetupEntry } from "openclaw/plugin-sdk/channel-entry-contract";
+import {
+  defineBundledChannelSetupEntry,
+  type BundledChannelSetupEntryContract,
+} from "openclaw/plugin-sdk/channel-entry-contract";
 
-export default defineBundledChannelSetupEntry({
+const entry: BundledChannelSetupEntryContract = defineBundledChannelSetupEntry({
   importMetaUrl: import.meta.url,
   plugin: {
     specifier: "./channel-plugin-api.js",
     exportName: "wechatBridgeSetupPlugin",
   },
 });
+
+export default entry;
