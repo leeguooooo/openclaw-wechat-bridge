@@ -97,6 +97,15 @@ export class BridgeRuntime {
   private streamTask: Promise<void> | null = null;
   private healthTask: Promise<void> | null = null;
   private cursor: number;
+  /**
+   * Set on the first `stop()` call. Read after every `await` in
+   * `start()` to detect "user called stop while we were mid-startup"
+   * and bail out without spawning the long-lived loops. Also makes
+   * concurrent `stop()` calls idempotent — the second sees the flag
+   * already true and the in-progress shutdown sequence already running.
+   */
+  private stopping = false;
+  private stopPromise: Promise<void> | null = null;
 
   constructor(deps: BridgeRuntimeDeps) {
     this.cfg = deps.config;
@@ -130,6 +139,10 @@ export class BridgeRuntime {
     if (this.status.kind !== "idle" && this.status.kind !== "stopped") {
       return false;
     }
+    // A previously-stopped runtime is reusable; reset the stop flag so
+    // a fresh start() doesn't see stale shutdown state.
+    this.stopping = false;
+    this.stopPromise = null;
 
     this.setStatus({ kind: "starting" });
 
@@ -144,10 +157,31 @@ export class BridgeRuntime {
     }
     this.lock = lock;
 
-    // Initial health gate. Auth-fatal halts immediately; degraded is a
-    // soft fail — we still spawn the loops so the health monitor can
-    // recover when the bridge wakes back up.
-    const initial = await this.client.checkHealth();
+    // Initial health gate. Wrapped in try/catch so a network rejection
+    // (DNS failure, connection refused, mid-flight stop) doesn't leak
+    // the lock — without this the runtime gets stuck in `starting`
+    // forever and a fresh start() can't acquire the bridge.
+    let initial;
+    try {
+      initial = await this.client.checkHealth();
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : `Health probe error: ${String(err)}`;
+      this.setStatus({ kind: "degraded", reason, since: Date.now() });
+      this.releaseLock();
+      return false;
+    }
+
+    // stop() may have been called while checkHealth() was in flight.
+    // If so, abandon the startup sequence — releaseLock + leave status
+    // in whatever stop() transitioned it to (or stopped).
+    if (this.stopping) {
+      this.releaseLock();
+      if (this.status.kind !== "stopped") {
+        this.setStatus({ kind: "stopped" });
+      }
+      return false;
+    }
+
     if (initial.kind === "auth-fatal") {
       this.setStatus({
         kind: "auth-fatal",
@@ -178,18 +212,31 @@ export class BridgeRuntime {
     if (this.status.kind === "idle" || this.status.kind === "stopped") {
       return;
     }
-    this.rootAbort?.abort();
-    this.streamAbort?.abort();
-    const tasks = [this.streamTask, this.healthTask].filter(
-      (t): t is Promise<void> => t !== null,
-    );
-    await Promise.allSettled(tasks);
-    this.streamTask = null;
-    this.healthTask = null;
-    this.streamAbort = null;
-    this.rootAbort = null;
-    this.releaseLock();
-    this.setStatus({ kind: "stopped" });
+    // Idempotency: a second concurrent stop() awaits the same shutdown
+    // promise as the first instead of running its own
+    // abort+release+setStatus sequence. Without this, two concurrent
+    // stops could race the lock release (compare-and-delete saves us
+    // from corruption, but the second call would still observe a
+    // partially-shut-down state).
+    if (this.stopping && this.stopPromise) {
+      return this.stopPromise;
+    }
+    this.stopping = true;
+    this.stopPromise = (async () => {
+      this.rootAbort?.abort();
+      this.streamAbort?.abort();
+      const tasks = [this.streamTask, this.healthTask].filter(
+        (t): t is Promise<void> => t !== null,
+      );
+      await Promise.allSettled(tasks);
+      this.streamTask = null;
+      this.healthTask = null;
+      this.streamAbort = null;
+      this.rootAbort = null;
+      this.releaseLock();
+      this.setStatus({ kind: "stopped" });
+    })();
+    return this.stopPromise;
   }
 
   private async runStreamLoop(rootSignal: AbortSignal): Promise<void> {

@@ -265,6 +265,86 @@ describe("BridgeRuntime — health monitor transitions", () => {
   });
 });
 
+describe("BridgeRuntime — M5a review race fixes", () => {
+  it("releases the lock when checkHealth() rejects at startup", async () => {
+    // Bug 8 from the M5a review: previously this leaked the lock
+    // forever and the runtime got stuck in `starting`.
+    const failingClient = makeStubClient({
+      health: () => Promise.reject(new Error("ECONNREFUSED")),
+    });
+    const rt = new BridgeRuntime({
+      config: baseConfig,
+      createClient: () => failingClient,
+      dispatch: () => undefined,
+    });
+    const ok = await rt.start();
+    expect(ok).toBe(false);
+    expect(rt.getStatus().kind).toBe("degraded");
+    // Lock must be released so the next runtime can acquire.
+    const second = tryAcquireBridgeLock(baseConfig.baseUrl);
+    expect(second.ok).toBe(true);
+  });
+
+  it("abandons start() and releases the lock if stop() runs during checkHealth()", async () => {
+    // Bug 2b from the M5a review: stop() could release the lock while
+    // start() was mid-await on checkHealth, leaving the loops running
+    // without lock ownership. Now start() detects the stop and bails.
+    let resolveHealth: ((outcome: HealthOutcome) => void) | null = null;
+    const healthPromise = new Promise<HealthOutcome>((resolve) => {
+      resolveHealth = resolve;
+    });
+    const slowClient = makeStubClient({
+      health: () => healthPromise,
+    });
+    const rt = new BridgeRuntime({
+      config: baseConfig,
+      createClient: () => slowClient,
+      dispatch: () => undefined,
+    });
+
+    const startPromise = rt.start();
+    // Let start() advance to the checkHealth await.
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Concurrent stop while checkHealth is still pending.
+    const stopPromise = rt.stop();
+
+    // Now resolve the health probe — start() should observe stopping=true
+    // after the await and bail without spawning any loop tasks.
+    resolveHealth?.({ kind: "healthy", status: { status: "connected" } });
+
+    const [startResult] = await Promise.all([startPromise, stopPromise]);
+    expect(startResult).toBe(false);
+    // No SSE/health tasks should have been spawned. Final state is "stopped".
+    expect(rt.getStatus().kind).toBe("stopped");
+    // Lock released — fresh runtime can acquire.
+    const second = tryAcquireBridgeLock(baseConfig.baseUrl);
+    expect(second.ok).toBe(true);
+  });
+
+  it("collapses concurrent stop() calls onto a single shutdown promise", async () => {
+    const rt = new BridgeRuntime({
+      config: baseConfig,
+      createClient: () =>
+        makeStubClient({ health: [{ kind: "healthy", status: { status: "connected" } }] }),
+      dispatch: () => undefined,
+      healthIntervalMs: 5,
+      retryInitialMs: 5,
+      retryMaxMs: 20,
+    });
+    await rt.start();
+
+    const a = rt.stop();
+    const b = rt.stop();
+    const c = rt.stop();
+    await Promise.all([a, b, c]);
+    expect(rt.getStatus().kind).toBe("stopped");
+    // Lock released — fresh runtime can acquire.
+    const second = tryAcquireBridgeLock(baseConfig.baseUrl);
+    expect(second.ok).toBe(true);
+  });
+});
+
 describe("BridgeRuntime — SSE error handling", () => {
   it("treats BridgeStreamError(401) as auth-fatal and halts", async () => {
     let yielded = false;
@@ -326,14 +406,14 @@ describe("BridgeRuntime — SSE error handling", () => {
     });
 
     await rt.start();
-    // Wait for the third stream attempt to land its event. With
-    // retryInitialMs=1ms and retryMaxMs=4ms, three attempts complete
-    // in <50ms even on a slow CI runner.
+    // Wait for the third stream attempt to land its event, then stop
+    // immediately so we don't keep accumulating events from subsequent
+    // reconnects (the factory yields a fresh event each iteration).
     for (let i = 0; i < 60 && dispatched.length === 0; i += 1) {
       await new Promise((r) => setTimeout(r, 5));
     }
     expect(attempts).toBeGreaterThanOrEqual(3);
-    expect(dispatched).toEqual(["ok"]);
+    expect(dispatched[0]).toBe("ok");
     await rt.stop();
   });
 });
