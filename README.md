@@ -26,6 +26,31 @@ The two plugins **complement** each other; install whichever fits your
 deployment. Channel ids are distinct (`openclaw-weixin` vs `wechat-bridge`)
 so they can coexist.
 
+## Install
+
+This package is **not** published to npm. Install from the GitHub
+release tarball or the Git tag — `openclaw plugins install` accepts
+either form:
+
+```sh
+# Pinned-tarball install (recommended; verifiable provenance)
+openclaw plugins install \
+  https://github.com/leeguooooo/openclaw-wechat-bridge/releases/download/v0.0.1/leeguoo-openclaw-wechat-bridge-0.0.1.tgz
+
+# Git-tag install (always grabs the head of v0.0.1's source)
+openclaw plugins install \
+  git+https://github.com/leeguooooo/openclaw-wechat-bridge.git#v0.0.1
+
+# Force-reinstall to pick up a newer release
+openclaw plugins install --force <same-url-as-above>
+```
+
+After install, restart the gateway to register the channel:
+
+```sh
+openclaw gateway --auth none --bind loopback
+```
+
 ## Prerequisites
 
 1. **macOS WeChat 4.1.8** running on Apple Silicon, with logged-in account
