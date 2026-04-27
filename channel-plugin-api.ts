@@ -1,12 +1,11 @@
-// Minimal-but-valid ChannelPlugin scaffolds. Without `id` + `meta` + a
-// `chatTypes` capability the loader's
-// `normalizeRegisteredChannelPlugin` (channel-validation.ts) rejects the
-// registration outright. M2-M5 will fill in adapters, allowlists,
-// runtime, and setup wizard.
+// Channel plugin contract surface. Typed loosely so this module
+// compiles without dragging in openclaw's full type graph at install
+// time — openclaw's loader only checks the runtime shape via
+// `normalizeRegisteredChannelPlugin`, not the static types.
 //
-// Typed loosely on purpose: the openclaw typings ride in via the host
-// package (peerDependency), and we don't want this scaffold to fail
-// `tsc` before the consumer has run `npm install openclaw`.
+// M5b in progress: `gateway.startAccount` instantiates a BridgeRuntime
+// per account so openclaw can spin our runtime up at gateway startup.
+// Outbound (`outbound`) and inbound dispatch glue still pending.
 
 type ResolvedWechatAccount = {
   accountId: string;
@@ -22,6 +21,20 @@ type ResolvedWechatAccount = {
     require_mention_in_groups?: boolean;
     enabled?: boolean;
     name?: string;
+  };
+};
+
+type GatewayAccountContext = {
+  account: ResolvedWechatAccount;
+  cfg?: unknown;
+  runtime?: unknown;
+  abortSignal?: AbortSignal;
+  setStatus?: (status: Record<string, unknown>) => void;
+  log?: {
+    info?: (message: string) => void;
+    warn?: (message: string) => void;
+    error?: (message: string) => void;
+    debug?: (message: string) => void;
   };
 };
 
@@ -42,6 +55,14 @@ type ChannelPluginShape = {
     media?: boolean;
     reply?: boolean;
     reactions?: boolean;
+  };
+  gateway?: {
+    /** Spawn a BridgeRuntime for the resolved account and return a
+     *  disposable handle. openclaw calls this once per enabled
+     *  account at gateway startup and disposes it on shutdown. */
+    startAccount: (
+      ctx: GatewayAccountContext,
+    ) => Promise<{ dispose: () => Promise<void> }>;
   };
   config: {
     /**
@@ -145,6 +166,81 @@ const wechatBridgeMeta: ChannelPluginShape["meta"] = {
   markdownCapable: false,
 };
 
+async function startAccount(
+  ctx: GatewayAccountContext,
+): Promise<{ dispose: () => Promise<void> }> {
+  // Lazy-import the runtime so the channel-plugin-api module stays
+  // dependency-free for openclaw's static manifest scan. The first
+  // gateway.startAccount call is also the first time we need
+  // `undici`/`zod` etc., so loading them here keeps cold-start cheap
+  // for plugins that are installed but never started.
+  const [{ BridgeRuntime }, { loadConfig }] = await Promise.all([
+    import("./src/runtime.js"),
+    import("./src/config-schema.js"),
+  ]);
+
+  const account = ctx.account;
+  ctx.log?.info?.(
+    `[wechat-bridge:${account.accountId}] starting BridgeRuntime against ${account.baseUrl}`,
+  );
+
+  const config = loadConfig({
+    extra: {
+      bridge_host: account.config.bridge_host,
+      bridge_port: account.config.bridge_port,
+      bridge_bearer: account.config.bridge_bearer,
+      self_wxid: account.config.self_wxid,
+      require_mention_in_groups: account.config.require_mention_in_groups,
+    },
+  });
+
+  const runtime = new BridgeRuntime({
+    config,
+    // M5b TODO: wire dispatch into openclaw/plugin-sdk/reply-runtime
+    // dispatchInboundMessage. For now the inbound events flow into
+    // a no-op so we can prove the lifecycle / lock / health pipeline
+    // works without dragging in the reply engine.
+    dispatch: (event) => {
+      ctx.log?.debug?.(
+        `[wechat-bridge:${account.accountId}] inbound (M5b dispatch TODO) ` +
+          `${event.chatType} chat=${event.chatId} body=${JSON.stringify(event.body).slice(0, 80)}`,
+      );
+    },
+  });
+
+  runtime.onStatusChange((status) => {
+    ctx.setStatus?.({
+      accountId: account.accountId,
+      baseUrl: account.baseUrl,
+      kind: status.kind,
+      ...(status.kind === "degraded" || status.kind === "auth-fatal"
+        ? { reason: status.kind === "auth-fatal" ? status.reason : status.reason }
+        : {}),
+    });
+  });
+
+  // Honor the gateway's abort signal: when the gateway shuts down it
+  // signals us, and we mirror that into runtime.stop() so the bridge
+  // lock gets released promptly.
+  if (ctx.abortSignal) {
+    if (ctx.abortSignal.aborted) {
+      void runtime.stop();
+    } else {
+      ctx.abortSignal.addEventListener("abort", () => {
+        void runtime.stop();
+      }, { once: true });
+    }
+  }
+
+  await runtime.start();
+
+  return {
+    dispose: async () => {
+      await runtime.stop();
+    },
+  };
+}
+
 export const wechatBridgePlugin: ChannelPluginShape = {
   id: "wechat-bridge",
   meta: wechatBridgeMeta,
@@ -153,6 +249,9 @@ export const wechatBridgePlugin: ChannelPluginShape = {
     media: false,
     reply: false,
     reactions: false,
+  },
+  gateway: {
+    startAccount,
   },
   config: {
     listAccountIds,
