@@ -63,6 +63,48 @@ type ChannelPluginShape = {
      *  value), so the function returns void. */
     startAccount: (ctx: GatewayAccountContext) => Promise<void>;
   };
+  messaging?: {
+    normalizeTarget: (raw: string) => string | null;
+    parseExplicitTarget: (params: {
+      raw: string;
+    }) => { to: string; chatType: "dm" | "group" } | null;
+    inferTargetChatType: (params: { to: string }) => "dm" | "group";
+    targetResolver: {
+      looksLikeId: (raw: string) => boolean;
+      hint: string;
+    };
+  };
+  outbound?: {
+    deliveryMode: "direct" | "gateway" | "hybrid";
+    chunker?: (text: string, limit: number) => string[];
+    chunkerMode?: "text" | "markdown";
+    textChunkLimit?: number;
+    /**
+     * REQUIRED — openclaw's deliver.ts:172 gates handler creation on
+     * this field; absent or undefined and the gateway throws "Outbound
+     * not configured for channel: wechat-bridge". Returns a single
+     * OutboundDeliveryResult per call.
+     *
+     * Note: this is the FLAT ChannelOutboundAdapter shape from
+     * src/channels/plugins/outbound.types.ts:75-160 — NOT the
+     * `base:` wrapper that createChatChannelPlugin uses internally
+     * before normalizing. Plugins that don't go through the chat
+     * helper (us) must supply the flat adapter directly.
+     */
+    sendText: (ctx: {
+      cfg: unknown;
+      to: string;
+      text: string;
+      accountId?: string | null;
+      deps?: { [channelId: string]: unknown };
+      abortSignal?: AbortSignal;
+    }) => Promise<{
+      channel: string;
+      messageId: string;
+      chatId?: string;
+      meta?: Record<string, unknown>;
+    }>;
+  };
   config: {
     /**
      * Enumerate account ids for this channel. We model the bridge as
@@ -175,6 +217,32 @@ const wechatBridgeMeta: ChannelPluginShape["meta"] = {
   markdownCapable: false,
 };
 
+// WeChat target shapes:
+//   wxid_*    — DM (regular user account)
+//   gh_*      — DM (official account / mp / 公众号)
+//   wm_*      — DM (work account / 企业微信 stub)
+//   wb_*      — DM (other internal types we've seen)
+//   v1_*      — DM (synthetic / generated wxid)
+//   *@chatroom — group
+//   filehelper — DM (the system "文件传输助手" special chat)
+//
+// Same regex hermes-agent uses (tools/send_message_tool.py:23) so a
+// target string that resolves on hermes also resolves here.
+const WECHAT_TARGET_RE =
+  /^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$/;
+
+const normalizeWechatTarget = (raw: string): string | null => {
+  if (typeof raw !== "string") return null;
+  const match = WECHAT_TARGET_RE.exec(raw);
+  return match ? match[1]! : null;
+};
+
+const inferWechatChatType = ({ to }: { to: string }): "dm" | "group" =>
+  to.endsWith("@chatroom") ? "group" : "dm";
+
+const looksLikeWechatId = (raw: string): boolean =>
+  WECHAT_TARGET_RE.test(raw);
+
 /**
  * Map our internal RuntimeStatus tagged-union onto openclaw's
  * ChannelAccountSnapshot shape (src/channels/plugins/types.core.ts:188-253).
@@ -248,6 +316,70 @@ function snapshotPatchFromRuntimeStatus(
  * discarded), so we mirror the abort into runtime.stop() and return
  * void.
  */
+/**
+ * Outbound text send — adapts our M4 sendMessage into openclaw's
+ * `outbound.sendText` contract so a CLI / agent / tool-call
+ * invocation flows through to wechat-bridge.
+ *
+ * The bridge's messageId is forwarded so openclaw can de-dupe / link
+ * agent acknowledgments. M4's chunking already runs inside
+ * sendMessage, so we feed `text` whole. openclaw's outer chunker
+ * (`outbound.chunker`) is set to a no-op pass-through within the
+ * 4096-char limit so its splitter doesn't redundantly fragment our
+ * chunks before they reach our path.
+ */
+async function sendTextOutbound(params: {
+  cfg: unknown;
+  to: string;
+  text: string;
+  accountId?: string | null;
+  abortSignal?: AbortSignal;
+}): Promise<{
+  channel: string;
+  messageId: string;
+  meta?: Record<string, unknown>;
+}> {
+  const [{ BridgeClient }, { loadConfig }, { sendMessage }] = await Promise.all([
+    import("./src/daemon.js"),
+    import("./src/config-schema.js"),
+    import("./src/outbound.js"),
+  ]);
+
+  const account = resolveAccount(params.cfg, params.accountId ?? null);
+  const runtimeConfig = loadConfig({
+    extra: {
+      bridge_host: account.config.bridge_host,
+      bridge_port: account.config.bridge_port,
+      bridge_bearer: account.config.bridge_bearer,
+    },
+  });
+  const client = new BridgeClient(runtimeConfig);
+
+  params.abortSignal?.throwIfAborted();
+  const outcome = await sendMessage(client, {
+    chatId: params.to,
+    content: params.text,
+  });
+
+  if (outcome.kind === "ok") {
+    return { channel: "wechat-bridge", messageId: outcome.messageId ?? "" };
+  }
+  if (outcome.kind === "auth-fatal") {
+    throw new Error(`wechat-bridge auth-fatal (HTTP ${outcome.status}): ${outcome.reason}`);
+  }
+  if (outcome.kind === "unsupported") {
+    throw new Error(outcome.reason);
+  }
+  if (outcome.kind === "reply-degraded") {
+    return {
+      channel: "wechat-bridge",
+      messageId: outcome.messageId ?? "",
+      meta: { degraded: "reply-not-supported" },
+    };
+  }
+  throw new Error(`wechat-bridge send failed (HTTP ${outcome.status}): ${outcome.reason}`);
+}
+
 async function startAccount(ctx: GatewayAccountContext): Promise<void> {
   // Lazy-import the runtime so the channel-plugin-api module stays
   // dependency-free for openclaw's static manifest scan. The first
@@ -340,6 +472,28 @@ export const wechatBridgePlugin: ChannelPluginShape = {
   },
   gateway: {
     startAccount,
+  },
+  messaging: {
+    normalizeTarget: normalizeWechatTarget,
+    parseExplicitTarget: ({ raw }) => {
+      const normalized = normalizeWechatTarget(raw);
+      if (!normalized) return null;
+      return { to: normalized, chatType: inferWechatChatType({ to: normalized }) };
+    },
+    inferTargetChatType: inferWechatChatType,
+    targetResolver: {
+      looksLikeId: looksLikeWechatId,
+      hint: "<wxid_…|gh_…|name@chatroom|filehelper>",
+    },
+  },
+  outbound: {
+    deliveryMode: "direct",
+    // M4 sendMessage handles chunking internally; openclaw's outer
+    // chunker just needs to be a no-op pass-through within our limit.
+    chunker: (text: string, _limit: number) => (text ? [text] : []),
+    chunkerMode: "text",
+    textChunkLimit: 4096,
+    sendText: sendTextOutbound,
   },
   config: {
     listAccountIds,
