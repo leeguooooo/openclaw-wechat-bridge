@@ -4,8 +4,13 @@ OpenClaw channel plugin that connects your agent to **macOS WeChat** through
 [`wechat-bridge`](https://github.com/leeguooooo/wechat-skill) — the LLDB-based
 local daemon from `wechat-skill`.
 
-> **Status: v0.0.1 scaffold.** Plugin shell, manifest, and tsconfig are in
-> place; inbound/outbound runtime lands in milestones 2-5.
+> **Status: v0.0.1 — outbound-only.** Lifecycle, target parsing, and
+> outbound `/send` are end-to-end verified against `openclaw-cli`.
+> **Inbound dispatch (agent reply on incoming WeChat messages) is
+> coming in v0.1** — the SSE pipeline + gating already runs, but the
+> wire-up to openclaw's reply engine is pending. Use this build today
+> if you want openclaw to *send* WeChat messages on your behalf; wait
+> for v0.1 if you need the agent to *answer* incoming messages.
 
 ## How this differs from `@tencent-weixin/openclaw-weixin`
 
@@ -46,13 +51,32 @@ so they can coexist.
 
 ## Roadmap
 
-- [x] **M1** Repo bootstrap (this commit) — package.json, manifest, tsconfig, plugin entry stubs
-- [ ] **M2** Bridge HTTP/SSE client (daemon.ts, config-schema)
-- [ ] **M3** Inbound — SSE → ChannelEvent, with `fromSelf` drop + `mentionedIds` group gate
-- [ ] **M4** Outbound — `/send` with `{chatId, message, mentions?}` + chunking
-- [ ] **M5** Lifecycle — connect/disconnect, single-consumer lock, health monitor
-- [ ] **M6** Tests — port the 14 Python regression cases from `hermes-agent/tests/gateway/platforms/test_wechat.py`
-- [ ] **M7** Catalog PR — add to `scripts/lib/official-external-channel-catalog.json` upstream
+Shipped in v0.0.1:
+
+- [x] **M1** Repo bootstrap — package.json, manifest, tsconfig
+- [x] **M2** Bridge HTTP/SSE client (daemon.ts, config-schema)
+- [x] **M3** Inbound — SSE → normalized event with `fromSelf` drop +
+      `mentionedIds` group gate (event flow into openclaw is
+      stubbed pending M5b dispatch glue)
+- [x] **M4** Outbound — `/send` with `{chatId, message, mentions?}` + chunking
+- [x] **M5a** Lifecycle — connect/disconnect, single-consumer lock,
+      health monitor, status state machine
+- [x] **M5b/partial** — config adapter, `gateway.startAccount`,
+      `messaging` target parser, `outbound.sendText` end-to-end
+      verified against openclaw-cli 2026.4.24
+
+Pending v0.1:
+
+- [ ] **M5b inbound dispatch** — hook our SSE → openclaw reply pipeline
+      via `dispatchInboundMessageWithDispatcher`. Today, inbound events
+      flow into a no-op debug log; agents won't answer incoming WeChat
+      messages until this lands.
+- [ ] **M5b sendMedia** — image/video/voice/document outbound
+- [ ] **M5b setupWizard** — first-run TCC + bridge-reachability walkthrough
+- [ ] **M6 lifecycle integration tests** — additional vitest cases for
+      gateway.startAccount + outbound.sendText error paths
+- [ ] **M7 catalog PR** — add to openclaw's
+      `scripts/lib/official-external-channel-catalog.json` upstream
 
 ## License
 
