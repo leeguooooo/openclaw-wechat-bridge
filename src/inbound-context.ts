@@ -45,9 +45,6 @@ export type WeChatInboundEvent = {
 export type InboundContextOptions = {
   selfWxid: string | null;
   requireMentionInGroups: boolean;
-  /** Wxids the operator considers "us"; messages from these senders
-   *  are dropped even when fromSelf is missing. */
-  botIds?: readonly string[];
 };
 
 const cleanString = (value: unknown): string =>
@@ -98,29 +95,43 @@ export function buildInboundEvent(
   // standing between us and an infinite DM reply loop.
   if (msg.fromSelf === true) return null;
 
-  // Operator-configured bot identities. The bridge always sets
-  // botIds=[] today, but operators may inject their own list via
-  // adapter config; respect both sources.
+  // Drop messages whose sender is on the bridge-supplied bot list. The
+  // bridge currently always sets botIds=[], but the field is part of
+  // the documented contract and may light up in future shapes.
+  // Intentionally NOT augmenting with an adapter-config list — we want
+  // run-for-run parity with hermes-agent (wechat.py:483) so a switch
+  // between adapters doesn't change which messages reach the agent.
   const payloadBotIds = new Set(cleanList(msg.botIds));
-  if (options.botIds) {
-    for (const id of options.botIds) {
-      const cleaned = cleanString(id);
-      if (cleaned) payloadBotIds.add(cleaned);
-    }
-  }
   if (payloadBotIds.has(senderId)) return null;
 
   const isGroup = Boolean(msg.isGroup);
   const mentionedIds = cleanList(msg.mentionedIds);
-  const isMentionedFlag = msg.isMentioned === true || (
-    options.selfWxid !== null && mentionedIds.includes(options.selfWxid)
-  );
 
-  // Group gating. Bypassed for DMs and when selfWxid is unset
-  // (operator hasn't told us who "we" are; degrade to allow-through
-  // rather than silently swallowing every group message).
-  if (isGroup && options.requireMentionInGroups && options.selfWxid !== null) {
-    if (!mentionedIds.includes(options.selfWxid)) {
+  // Treat empty-string selfWxid identically to null. Python truthiness
+  // would naturally collapse "" to false; TS strictness with `!== null`
+  // would let "" through as a configured value. Normalize once here so
+  // every downstream check sees the same thing.
+  const effectiveSelfWxid =
+    options.selfWxid && options.selfWxid.trim().length > 0
+      ? options.selfWxid.trim()
+      : null;
+
+  const isMentionedFlag =
+    msg.isMentioned === true ||
+    (effectiveSelfWxid !== null && mentionedIds.includes(effectiveSelfWxid));
+
+  // Group gating. Three preconditions: chat is a group, gating is
+  // enabled, and the operator has told us their wxid. When ANY of
+  // those is false we fail-open (let the message through) — matching
+  // wechat.py:502 verbatim. Fail-open is the deliberate choice:
+  //   * Without selfWxid the gate has no comparison key. Failing closed
+  //     would silently swallow every group message and confuse a first-
+  //     time operator who hasn't yet set WECHAT_SELF_WXID.
+  //   * Operators who want to harden this can flip
+  //     requireMentionInGroups=false (allow all) or set selfWxid (gate
+  //     activates). Either way the choice is explicit.
+  if (isGroup && options.requireMentionInGroups && effectiveSelfWxid !== null) {
+    if (!mentionedIds.includes(effectiveSelfWxid)) {
       return null;
     }
   }
@@ -164,7 +175,10 @@ export class RecentMessageIds {
   private readonly seen = new Set<string>();
 
   constructor(capacity = 256) {
-    this.capacity = capacity;
+    // Guard a non-positive capacity so the LRU can't be misused as an
+    // unbounded set (every add() would skip the eviction branch and
+    // memory would grow without limit).
+    this.capacity = Math.max(1, Math.trunc(capacity));
   }
 
   has(id: string): boolean {
