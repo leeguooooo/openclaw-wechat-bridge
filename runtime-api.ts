@@ -1,8 +1,13 @@
-// Gateway-side runtime hook. The actual runtime (SSE consume loop, send
-// outbound, lifecycle) is wired in milestones 3-5 via
-// `setWechatBridgeRuntime`.
+// Public runtime entry. openclaw's bundled-channel-entry contract
+// expects an exported `setWechatBridgeRuntime` function so the gateway
+// can hand the channel adapter a `PluginRuntime` at registration time.
+//
+// Re-exports the store helpers from `./runtime` (the 12-line store
+// scaffold) so consumers can import the function directly. Mirrors
+// signal's public runtime-api.ts at extensions/signal/runtime-api.ts.
 
-export function setWechatBridgeRuntime(): void {
-  // milestone 5: register the channel runtime against openclaw's
-  // gateway. For now, no-op so loader can resolve the export.
-}
+export {
+  clearWechatBridgeRuntime,
+  getWechatBridgeRuntime,
+  setWechatBridgeRuntime,
+} from "./runtime.js";
