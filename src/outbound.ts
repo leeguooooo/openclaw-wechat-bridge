@@ -116,11 +116,11 @@ export async function sendMessage(
   let lastMessageId: string | null = null;
 
   for (let i = 0; i < chunks.length; i += 1) {
-    // v1.10.39 bridge uses `{wxid, text}`; earlier shapes that paired
-    // `{chatId, message}` are no longer accepted under any --shape.
+    // Bridge `--shape hermes` contract: `{chatId, message}`. See the
+    // SendBody docstring in daemon.ts for the v0.0.2 → v0.0.3 history.
     const body: SendBody = {
-      wxid: input.chatId,
-      text: chunks[i] ?? "",
+      chatId: input.chatId,
+      message: chunks[i] ?? "",
     };
     if (mentions.length > 0 && i === 0) {
       body.mentions = [...mentions];

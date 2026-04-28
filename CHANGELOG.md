@@ -4,7 +4,58 @@ All notable changes to this project. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning
 follows [Semver](https://semver.org/).
 
-## [0.0.2] — 2026-04-28
+## [0.0.3] — 2026-04-28
+
+Revert v0.0.2's wire-shape change. v0.0.2 was wrong — the bridge
+contract for plugins targeting `--shape hermes` is still
+`{chatId, message}`, same as v0.0.1. v0.0.2 ran a live test against an
+accidentally-running `--shape native` instance (PID 28146 on the test
+mac stole port 18400 because the LaunchAgent's `--shape hermes`
+instance was crashlooping on TCC), saw `{wxid, text}` accepted, and
+mistook that for a contract change in v1.10.39.
+
+Re-tested against a clean `--shape hermes` v1.10.39 bridge (started on
+a free port with `WECHAT_BRIDGE_SKIP_AX_PREFLIGHT=1`):
+
+```
+$ curl -X POST .../send -d '{"chatId":"filehelper","message":"hi"}'
+  → 200 OK
+
+$ curl -X POST .../send -d '{"wxid":"filehelper","text":"hi"}'
+  → 400 invalid JSON body: missing field `chatId`
+```
+
+The two bridge shapes (`--shape native` vs `--shape hermes`) are not
+interchangeable on the wire. This plugin is a `--shape hermes`
+consumer and pins to that contract. Operators running
+`--shape native` need a different adapter — open an issue if you want
+us to support both.
+
+### Fixed
+
+- Reverted `SendBody` to `{chatId, message, mentions?}` (the
+  `--shape hermes` contract).
+- Test assertions reverted accordingly.
+
+### Compatibility
+
+This release is **the right shape for `wechat-bridge --shape hermes`**.
+It's the same wire shape as v0.0.1 and works on bridge ≥ v1.10.30
+where the `--shape hermes` contract has been stable.
+
+If you're on bridge v1.10.39 and seeing 400s from this plugin, your
+`:18400` is probably being served by a stray `--shape native`
+process, not the LaunchAgent's `--shape hermes` one. Check with
+`pgrep -fl wechat-bridge` and `launchctl print
+gui/$(id -u)/ai.wechat.bridge`. The fix is operational (re-grant TCC,
+let the LaunchAgent take :18400), not a plugin code change.
+
+## [0.0.2] — 2026-04-28 (deprecated, do not use)
+
+**Mistakenly migrated to `{wxid, text}`.** See v0.0.3 entry above for
+the correction. Use v0.0.3 instead.
+
+
 
 Hotfix for `wechat-bridge v1.10.39` wire-shape change.
 

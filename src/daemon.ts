@@ -65,21 +65,25 @@ export type RequestJsonResult<T = unknown> = {
 };
 
 /**
- * `/send` body shape. Bridge v1.10.39 unified the field names across
- * `--shape native` and `--shape hermes` to `{wxid, text}` — earlier
- * versions accepted `{chatId, message}` under `--shape hermes`. Live
- * test on 192.168.0.190 against bridge 1.10.39:
- *   {chatId, message} -> 400 missing field `wxid`
- *   {wxid, message}   -> 400 missing field `text`
- *   {wxid, text}      -> accepted, send dispatched
+ * `/send` body shape — pinned to bridge `--shape hermes` contract:
+ * `{chatId, message, mentions?}`.
  *
- * Pinning to {wxid, text} aligns with the current and future contract;
- * operators on older 1.10.x bridges will see a 400 here and need to
- * upgrade. Documented in the v0.0.2 CHANGELOG.
+ * v0.0.2 mistakenly migrated to `{wxid, text}` after a live test on
+ * an accidentally-running `--shape native` bridge instance (PID 28146
+ * on 192.168.0.190 stole :18400 because the LaunchAgent's
+ * `--shape hermes` instance was crashlooping on TCC). v0.0.3 reverts
+ * the change after re-testing against a clean v1.10.39 `--shape hermes`
+ * bridge confirmed it still uses `{chatId, message}`:
+ *   curl -X POST .../send -d '{"chatId":"filehelper","message":"hi"}' → 200
+ *   curl -X POST .../send -d '{"wxid":"filehelper","text":"hi"}'      → 400 missing field `chatId`
+ *
+ * The two bridge shapes are not interchangeable. Plugin documents
+ * itself as a `--shape hermes` consumer; operators running
+ * `--shape native` need a different adapter.
  */
 export type SendBody = {
-  wxid: string;
-  text: string;
+  chatId: string;
+  message: string;
   mentions?: string[];
 };
 

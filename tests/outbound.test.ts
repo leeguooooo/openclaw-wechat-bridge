@@ -35,8 +35,8 @@ describe("sendMessage — happy path + parity with hermes", () => {
     expect(result).toEqual({ kind: "ok", messageId: "msg-1" });
     expect(sendMock).toHaveBeenCalledTimes(1);
     const body = sendMock.mock.calls[0]?.[0];
-    // Bridge v1.10.39 wire shape: {wxid, text}.
-    expect(body).toEqual({ wxid: "wxid_123", text: "hello from openclaw" });
+    // Bridge `--shape hermes` wire shape: {chatId, message}.
+    expect(body).toEqual({ chatId: "wxid_123", message: "hello from openclaw" });
   });
 
   it("returns auth-fatal on 401 without continuing (parity test_send_401_*)", async () => {

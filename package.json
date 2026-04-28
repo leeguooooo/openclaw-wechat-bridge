@@ -1,6 +1,6 @@
 {
   "name": "@leeguoo/openclaw-wechat-bridge",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "OpenClaw channel plugin that bridges to local macOS WeChat via wechat-bridge (LLDB-based, from leeguooooo/wechat-skill)",
   "license": "MIT",
   "author": "leeguooooo <guoli@zhihu.com>",

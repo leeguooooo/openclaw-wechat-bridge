@@ -4,9 +4,12 @@ OpenClaw channel plugin that connects your agent to **macOS WeChat** through
 [`wechat-bridge`](https://github.com/leeguooooo/wechat-skill) — the LLDB-based
 local daemon from `wechat-skill`.
 
-> **Status: v0.0.2 — outbound-only, pinned to bridge ≥ v1.10.39.**
+> **Status: v0.0.3 — outbound-only, requires `wechat-bridge --shape hermes`.**
 > Lifecycle, target parsing, and outbound `/send` are end-to-end
-> verified against `openclaw-cli`.
+> verified against `openclaw-cli`. Plugin pins to the `--shape hermes`
+> wire contract `{chatId, message}` — confirmed against bridge v1.10.39
+> on a clean `--shape hermes` instance. Operators running
+> `--shape native` need a different adapter.
 > **Inbound dispatch (agent reply on incoming WeChat messages) is
 > coming in v0.1** — the SSE pipeline + gating already runs, but the
 > wire-up to openclaw's reply engine is pending. Use this build today
@@ -36,11 +39,11 @@ either form:
 ```sh
 # Pinned-tarball install (recommended; verifiable provenance)
 openclaw plugins install \
-  https://github.com/leeguooooo/openclaw-wechat-bridge/releases/download/v0.0.2/leeguoo-openclaw-wechat-bridge-0.0.1.tgz
+  https://github.com/leeguooooo/openclaw-wechat-bridge/releases/download/v0.0.3/leeguoo-openclaw-wechat-bridge-0.0.1.tgz
 
-# Git-tag install (always grabs the head of v0.0.2's source)
+# Git-tag install (always grabs the head of v0.0.3's source)
 openclaw plugins install \
-  git+https://github.com/leeguooooo/openclaw-wechat-bridge.git#v0.0.2
+  git+https://github.com/leeguooooo/openclaw-wechat-bridge.git#v0.0.3
 
 # Force-reinstall to pick up a newer release
 openclaw plugins install --force <same-url-as-above>
@@ -77,7 +80,7 @@ openclaw gateway --auth none --bind loopback
 
 ## Roadmap
 
-Shipped in v0.0.2:
+Shipped in v0.0.3:
 
 - [x] **M1** Repo bootstrap — package.json, manifest, tsconfig
 - [x] **M2** Bridge HTTP/SSE client (daemon.ts, config-schema)
