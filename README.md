@@ -39,7 +39,7 @@ either form:
 ```sh
 # Pinned-tarball install (recommended; verifiable provenance)
 openclaw plugins install \
-  https://github.com/leeguooooo/openclaw-wechat-bridge/releases/download/v0.0.3/leeguoo-openclaw-wechat-bridge-0.0.1.tgz
+  https://github.com/leeguooooo/openclaw-wechat-bridge/releases/download/v0.0.3/leeguoo-openclaw-wechat-bridge-0.0.3.tgz
 
 # Git-tag install (always grabs the head of v0.0.3's source)
 openclaw plugins install \
@@ -61,7 +61,22 @@ openclaw gateway --auth none --bind loopback
 2. **`wechat-skill`** installed and `wechat-bridge` reachable on
    `127.0.0.1:18400` — see
    <https://github.com/leeguooooo/wechat-skill> for setup
-3. Accessibility (TCC) granted to `wechat-bridge` —
+3. **Bridge MUST be invoked with `--shape hermes`**. The
+   wechat-skill `install.sh` writes a LaunchAgent that does this
+   automatically. If you started the bridge by hand, the invocation
+   must look like:
+
+   ```sh
+   wechat-bridge --shape hermes --port 18400
+   ```
+
+   Without `--shape hermes` the bridge defaults to `--shape native`,
+   which expects a different wire shape (`{wxid, text}`) and rejects
+   this plugin's `{chatId, message}` payload with HTTP 400 `missing
+   field 'chatId'`. If you see that error, check
+   `pgrep -fl wechat-bridge` — anything without `--shape hermes` is
+   the wrong shape.
+4. Accessibility (TCC) granted to `wechat-bridge` —
    the wechat-skill installer's modal dialog drives this in 30s
 
 ## Channel id
