@@ -4,6 +4,36 @@ All notable changes to this project. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning
 follows [Semver](https://semver.org/).
 
+## [0.0.2] — 2026-04-28
+
+Hotfix for `wechat-bridge v1.10.39` wire-shape change.
+
+### Fixed
+
+- **Bridge `/send` field rename** — bridge v1.10.39 unified the
+  outbound payload schema across `--shape native` and `--shape hermes`
+  to `{wxid, text}`. Earlier shapes that paired `{chatId, message}`
+  are no longer accepted under any --shape. v0.0.1 sent
+  `{chatId, message}` and got HTTP 400 from v1.10.39 bridges:
+
+      invalid JSON body: missing field `wxid` at line 1 column 48
+
+  Live test on a v1.10.39 bridge confirms `{wxid, text}` is the only
+  accepted shape today. Pinned our SendBody type accordingly.
+
+- **Failure detection** — v1.10.39 surfaces send failures via
+  `status: "failed"` plus a rich diagnostic envelope (e.g.
+  `delivery_verify_timeout`, `user_facing_zh`). Older bridges used
+  `success: false`. We now treat either as failure and prefer the
+  `user_facing_zh` reason when present.
+
+### Compatibility note
+
+This release is **incompatible with bridge < v1.10.39**. Operators on
+older 1.10.x bridges should upgrade `wechat-skill` first; this plugin
+no longer falls back to the old wire shape. v0.0.1 remains available
+for the older bridge, but is no longer supported.
+
 ## [0.0.1] — 2026-04-28
 
 First public release. Outbound is feature-complete and end-to-end

@@ -64,17 +64,41 @@ export type RequestJsonResult<T = unknown> = {
   data: T | null;
 };
 
+/**
+ * `/send` body shape. Bridge v1.10.39 unified the field names across
+ * `--shape native` and `--shape hermes` to `{wxid, text}` — earlier
+ * versions accepted `{chatId, message}` under `--shape hermes`. Live
+ * test on 192.168.0.190 against bridge 1.10.39:
+ *   {chatId, message} -> 400 missing field `wxid`
+ *   {wxid, message}   -> 400 missing field `text`
+ *   {wxid, text}      -> accepted, send dispatched
+ *
+ * Pinning to {wxid, text} aligns with the current and future contract;
+ * operators on older 1.10.x bridges will see a 400 here and need to
+ * upgrade. Documented in the v0.0.2 CHANGELOG.
+ */
 export type SendBody = {
-  chatId: string;
-  message: string;
+  wxid: string;
+  text: string;
   mentions?: string[];
 };
 
+/**
+ * Bridge v1.10.39 send response. Successful send sets
+ * `{status: "sent"}` plus a messageId; failures land in `status:
+ * "failed"` with rich diagnostic fields. `success` is the legacy
+ * boolean we still read defensively for backward compat with older
+ * bridges that hadn't migrated to the tagged status string.
+ */
 export type SendResponse = {
   success?: boolean;
+  status?: "sent" | "failed";
   messageId?: string;
   error?: string;
   message?: string;
+  reason?: string;
+  user_facing_zh?: string;
+  delivered_verified?: boolean;
 };
 
 /**

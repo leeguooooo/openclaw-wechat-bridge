@@ -1,6 +1,6 @@
 {
   "name": "@leeguoo/openclaw-wechat-bridge",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "OpenClaw channel plugin that bridges to local macOS WeChat via wechat-bridge (LLDB-based, from leeguooooo/wechat-skill)",
   "license": "MIT",
   "author": "leeguooooo <guoli@zhihu.com>",
@@ -23,10 +23,17 @@
   ],
   "type": "module",
   "files": [
-    "dist",
+    "index.ts",
+    "channel-plugin-api.ts",
+    "runtime.ts",
+    "runtime-api.ts",
+    "setup-entry.ts",
+    "src/",
+    "tsconfig.json",
     "openclaw.plugin.json",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",

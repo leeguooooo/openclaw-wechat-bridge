@@ -116,9 +116,11 @@ export async function sendMessage(
   let lastMessageId: string | null = null;
 
   for (let i = 0; i < chunks.length; i += 1) {
+    // v1.10.39 bridge uses `{wxid, text}`; earlier shapes that paired
+    // `{chatId, message}` are no longer accepted under any --shape.
     const body: SendBody = {
-      chatId: input.chatId,
-      message: chunks[i] ?? "",
+      wxid: input.chatId,
+      text: chunks[i] ?? "",
     };
     if (mentions.length > 0 && i === 0) {
       body.mentions = [...mentions];
@@ -149,12 +151,16 @@ export async function sendMessage(
         reason: responseError(data, `WeChat bridge error (${status})`),
       };
     }
-    if (data && data.success === false) {
-      return {
-        kind: "error",
-        status: 200,
-        reason: responseError(data, "WeChat bridge send failed"),
-      };
+    // v1.10.39 surfaces failures via `status: "failed"` + a rich
+    // diagnostic envelope (e.g. delivery_verify_timeout when WeChat's
+    // InputView slot_send signal chain isn't warmed up). Older
+    // bridges used `success: false` instead. Treat either as failure;
+    // prefer the user-facing reason when present.
+    if (data && (data.status === "failed" || data.success === false)) {
+      const reason = cleanString(
+        data.user_facing_zh ?? data.reason ?? data.error ?? data.message ?? "",
+      ) || "WeChat bridge send failed";
+      return { kind: "error", status: 200, reason };
     }
     lastMessageId = cleanString(data?.messageId) || lastMessageId;
   }

@@ -167,7 +167,7 @@ describe("BridgeClient.send — retry on 503", () => {
         .mockResolvedValueOnce(makeJsonResponse(503, { error: "still transient" }))
         .mockResolvedValueOnce(makeJsonResponse(200, { success: true, messageId: "abc" }));
       const client = new BridgeClient(config);
-      const sendPromise = client.send({ chatId: "filehelper", message: "hi" });
+      const sendPromise = client.send({ wxid: "filehelper", text: "hi" });
       // run pending timers (the linear backoff between retries)
       await vi.advanceTimersByTimeAsync(5_000);
       const result = await sendPromise;
@@ -184,7 +184,7 @@ describe("BridgeClient.send — retry on 503", () => {
       makeJsonResponse(401, { error: "auth_expired" }),
     );
     const client = new BridgeClient(config);
-    const result = await client.send({ chatId: "filehelper", message: "hi" });
+    const result = await client.send({ wxid: "filehelper", text: "hi" });
     expect(result.status).toBe(401);
     expect(undiciMock.request).toHaveBeenCalledTimes(1);
   });
