@@ -27,7 +27,7 @@ describe("tryAcquireBridgeLock", () => {
 
   it("isolates locks across distinct baseUrls", () => {
     const a = tryAcquireBridgeLock("http://127.0.0.1:18400");
-    const b = tryAcquireBridgeLock("http://192.168.0.190:18400");
+    const b = tryAcquireBridgeLock("http://192.0.2.1:18400");
     expect(a.ok).toBe(true);
     expect(b.ok).toBe(true);
   });
