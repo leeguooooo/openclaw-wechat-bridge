@@ -69,9 +69,9 @@ export type RequestJsonResult<T = unknown> = {
  * `{chatId, message, mentions?}`.
  *
  * v0.0.2 mistakenly migrated to `{wxid, text}` after a live test on
- * an accidentally-running `--shape native` bridge instance (PID 28146
- * on 192.168.0.190 stole :18400 because the LaunchAgent's
- * `--shape hermes` instance was crashlooping on TCC). v0.0.3 reverts
+ * an accidentally-running `--shape native` bridge instance — a stray
+ * manual process held :18400 because the LaunchAgent's `--shape
+ * hermes` instance was crashlooping on TCC. v0.0.3 reverts
  * the change after re-testing against a clean v1.10.39 `--shape hermes`
  * bridge confirmed it still uses `{chatId, message}`:
  *   curl -X POST .../send -d '{"chatId":"filehelper","message":"hi"}' → 200

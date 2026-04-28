@@ -9,9 +9,9 @@ follows [Semver](https://semver.org/).
 Revert v0.0.2's wire-shape change. v0.0.2 was wrong — the bridge
 contract for plugins targeting `--shape hermes` is still
 `{chatId, message}`, same as v0.0.1. v0.0.2 ran a live test against an
-accidentally-running `--shape native` instance (PID 28146 on the test
-mac stole port 18400 because the LaunchAgent's `--shape hermes`
-instance was crashlooping on TCC), saw `{wxid, text}` accepted, and
+accidentally-running `--shape native` instance — a stray manual
+process stole port 18400 because the LaunchAgent's `--shape hermes`
+instance was crashlooping on TCC. We saw `{wxid, text}` accepted and
 mistook that for a contract change in v1.10.39.
 
 Re-tested against a clean `--shape hermes` v1.10.39 bridge (started on
